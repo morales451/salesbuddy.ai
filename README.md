@@ -1,13 +1,23 @@
 # SalesBuddy.ai
 
-Sales & Meeting Intelligence for Henry Company. Upload audio recordings from your Plaud Note device and get Salesforce-ready call logs, sales coaching insights, and structured meeting minutes — powered by OpenAI.
+Sales & Meeting Intelligence for Henry Company. Upload audio recordings from your Plaud Note device and get Salesforce-ready call logs, sales coaching insights, competitive intelligence, and structured meeting minutes — powered by OpenAI.
 
 ## Features
 
 - **Batch upload** — process multiple WAV, MP3, or M4A recordings at once
+- **Per-file mode selection** — assign External Sales Call or Internal Meeting mode to each file independently
 - **Two analysis modes:**
-  - **External Sales Call** — generates a Salesforce activity log (subject, account, relationship status, products discussed, next steps) plus SPIN Selling and Challenger Sale coaching analysis
-  - **Internal Meeting** — generates meeting minutes, action items with owners, and decisions made
+  - **External Sales Call** — Salesforce activity log, SPIN/Challenger coaching, competitive intelligence, and objection handling analysis
+  - **Internal Meeting** — meeting minutes, action items with owners, and decisions made
+- **Visual coaching scorecard** — at-a-glance SPIN Selling, Challenger Sale, and Deal Trajectory gauges for each external call
+- **Competitive intelligence** — automatic extraction of competitor mentions, switching signals, and market intel
+- **Objection handling analysis** — identifies objections, evaluates rep responses, and suggests stronger alternatives
+- **Copy-to-clipboard** — one-click copy for Salesforce logs, competitive intel, objection analysis, and more
+- **Download & export** — download individual analyses, transcripts, or a combined full report as markdown
+- **CSV export** — export Salesforce fields (Subject, Account, Status, Products, Next Steps) as a CSV for bulk import
+- **End-of-day pipeline summary** — generate a roll-up briefing across all processed calls: accounts touched, aggregate next steps, pipeline health, and top priorities for tomorrow
+- **Follow-up email drafts** — auto-generate a professional follow-up email based on any external call's analysis
+- **Salesforce API integration** — push call logs directly to Salesforce as completed Task records (optional, requires credentials)
 - **Auto-chunking** — files over 25 MB are automatically split so they fit within the Whisper API limit
 - **Henry Company context** — the AI is primed with your product portfolio, industry terms, and territory details
 
@@ -80,21 +90,42 @@ The app opens at `http://localhost:8501`.
 
 1. Open the app in your browser.
 2. In the **sidebar**, upload one or more audio files (WAV, MP3, or M4A).
-3. Select the **Processing Mode**:
-   - *External Sales Call* — for contractor, distributor, or owner calls
-   - *Internal Meeting* — for pipeline reviews, strategy sessions, etc.
+3. Select the **Default Processing Mode** — or expand "Per-file mode overrides" to set each file individually.
 4. Click **Process Files**.
-5. Review results in the expandable sections. Each file has an **Analysis** tab and a **Transcript** tab.
-6. Copy the Salesforce block into your CRM, review coaching feedback, and share meeting minutes with your team.
+5. Review results:
+   - **Coaching Scorecard** — visual gauges for SPIN, Challenger, and Deal Trajectory (external calls)
+   - **Analysis tab** — full analysis with download and copy buttons
+   - **Transcript tab** — raw transcript with download
+   - **Salesforce Log tab** — isolated Salesforce block with one-click copy
+   - **Competitive Intel tab** — competitor mentions and market intelligence
+   - **Objections tab** — objection handling analysis with coaching suggestions
+   - **Follow-Up Email tab** — generate and copy a professional follow-up email
+   - **Push to SF tab** — push the call log directly to Salesforce
+6. Use the **global action bar** to download the full report, export Salesforce CSV, or generate a pipeline summary.
+
+---
+
+## Salesforce Integration (Optional)
+
+To push call logs directly to Salesforce:
+
+1. Expand **Salesforce Integration** in the sidebar.
+2. Enter your Salesforce username, password, and security token.
+3. Select the domain (`login` for production, `test` for sandbox).
+4. Use the **Push to SF** tab on any external call result.
+
+The integration creates a completed Task record in Salesforce with the call subject and full analysis in the description.
 
 ---
 
 ## Cost Estimates
 
-| Operation     | Model     | Approximate Cost                          |
-|---------------|-----------|-------------------------------------------|
-| Transcription | whisper-1 | $0.006 per minute of audio                |
-| Analysis      | gpt-4o    | ~$0.01–0.03 per call (varies by length)   |
+| Operation         | Model     | Approximate Cost                          |
+|-------------------|-----------|-------------------------------------------|
+| Transcription     | whisper-1 | $0.006 per minute of audio                |
+| Analysis          | gpt-4o    | ~$0.01–0.03 per call (varies by length)   |
+| Pipeline Summary  | gpt-4o    | ~$0.02–0.05 per summary                   |
+| Follow-Up Email   | gpt-4o    | ~$0.005 per email                         |
 
 **Example:** A 30-minute sales call costs roughly **$0.20** ($0.18 transcription + ~$0.02 analysis).
 
@@ -104,7 +135,7 @@ The app opens at `http://localhost:8501`.
 
 ```
 salesbuddy.ai/
-├── app.py                 # Streamlit application
+├── app.py                 # Streamlit application (all features)
 ├── requirements.txt       # Python dependencies
 ├── .gitignore             # Excludes secrets and artifacts
 ├── .streamlit/
