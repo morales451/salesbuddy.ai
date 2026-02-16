@@ -26,3 +26,6 @@ Thumbs.db
 *.wav
 *.mp3
 *.m4a
+
+# Local data (session history DB)
+.salesbuddy_data/

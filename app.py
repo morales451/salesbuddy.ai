@@ -2,7 +2,7 @@
 SalesBuddy.ai — Sales & Meeting Intelligence for Henry Company
 Transcribes and analyzes sales calls and internal meetings using OpenAI.
 
-v2.0 Features:
+v3.0 Features:
 - Per-file mode selection (External Sales Call / Internal Meeting)
 - Competitive intelligence extraction
 - Objection handling analysis
@@ -13,14 +13,22 @@ v2.0 Features:
 - End-of-day pipeline summary
 - Follow-up email drafts
 - Salesforce API integration (optional)
+- Speaker diarization with talk-to-listen ratio
+- Session history with SQLite persistence
+- Coaching trends over time
 """
 
 import csv
 import io
+import json
 import os
 import re
+import sqlite3
 import tempfile
+from datetime import datetime
+from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -36,12 +44,16 @@ CHUNK_DURATION_MS = 10 * 60 * 1000  # 10-minute chunks when splitting
 SUPPORTED_FORMATS = ["wav", "mp3", "m4a"]
 
 SCORE_MAP = {"strong": 1.0, "developing": 0.5, "weak": 0.15}
+SCORE_NUMERIC = {"strong": 3, "developing": 2, "weak": 1}
 TRAJECTORY_CONFIG = {
     "trending win": ("\u2705", "green"),
     "trending loss": ("\u274C", "red"),
     "neutral": ("\u2796", "orange"),
     "too early to tell": ("\u2753", "gray"),
 }
+
+DATA_DIR = Path(os.environ.get("SALESBUDDY_DATA_DIR", ".salesbuddy_data"))
+DB_PATH = DATA_DIR / "history.db"
 
 # ---------------------------------------------------------------------------
 # System Prompts
@@ -250,6 +262,156 @@ from the sales rep to the customer.
 ## Call Analysis:
 """
 
+DIARIZATION_PROMPT = """\
+You are a conversation analysis expert specializing in sales call recordings.
+
+The following is a transcript from a recorded sales call between a Henry Company \
+sales representative and a customer/prospect. The recording was made on a Plaud Note \
+device and may be mono audio with both speakers on one channel.
+
+## Your Task
+1. Identify speaker turns in the conversation.
+2. Label the sales representative as "Rep" and the customer/prospect as "Customer". \
+If you can identify speakers by name, add the name in parentheses.
+3. Count the approximate words spoken by each speaker.
+
+## Output
+Return ONLY a valid JSON object with this exact structure (no markdown fencing):
+{
+  "diarized_transcript": "**Rep:** [text]\\n\\n**Customer:** [text]\\n\\n...",
+  "speakers": {
+    "Rep": {"word_count": 0, "turn_count": 0},
+    "Customer": {"word_count": 0, "turn_count": 0}
+  },
+  "talk_ratio": 0.0
+}
+
+Rules for the JSON:
+- "diarized_transcript": The full transcript reformatted with speaker labels. \
+Use **Rep:** and **Customer:** prefixes. Separate turns with blank lines.
+- "speakers": Word count and turn count for each speaker.
+- "talk_ratio": Rep's proportion of total words as a float between 0 and 1 \
+(e.g., 0.65 means the rep spoke 65% of the time).
+
+If you cannot reliably distinguish speakers (e.g., transcript is too short or \
+unclear), set talk_ratio to -1 and put the original text as diarized_transcript \
+with a note at the top."""
+
+
+# ---------------------------------------------------------------------------
+# Helper Functions — Database
+# ---------------------------------------------------------------------------
+def init_database():
+    """Initialize the SQLite database and create tables if needed."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            transcript TEXT,
+            diarized_transcript TEXT,
+            analysis TEXT,
+            spin_score TEXT,
+            challenger_score TEXT,
+            deal_trajectory TEXT,
+            talk_ratio REAL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_analysis(file_name, mode, transcript, analysis, diarization_data=None):
+    """Save an analysis result to the database."""
+    scores = parse_scores(analysis) if analysis else {}
+    talk_ratio = None
+    diarized_transcript = None
+
+    if diarization_data:
+        talk_ratio = diarization_data.get("talk_ratio")
+        diarized_transcript = diarization_data.get("diarized_transcript")
+        if talk_ratio == -1:
+            talk_ratio = None
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute(
+        """
+        INSERT INTO analyses
+            (file_name, mode, transcript, diarized_transcript, analysis,
+             spin_score, challenger_score, deal_trajectory, talk_ratio, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            file_name,
+            mode,
+            transcript,
+            diarized_transcript,
+            analysis,
+            scores.get("spin"),
+            scores.get("challenger"),
+            scores.get("trajectory"),
+            talk_ratio,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_history(limit=50, offset=0):
+    """Retrieve analysis history from the database."""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT id, file_name, mode, transcript, diarized_transcript, analysis,
+               spin_score, challenger_score, deal_trajectory, talk_ratio, created_at
+        FROM analyses
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_history_count():
+    """Return total number of saved analyses."""
+    conn = sqlite3.connect(str(DB_PATH))
+    count = conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0]
+    conn.close()
+    return count
+
+
+def delete_history_entry(entry_id):
+    """Delete a single history entry by ID."""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("DELETE FROM analyses WHERE id = ?", (entry_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_coaching_scores_over_time():
+    """Retrieve coaching scores over time for trend analysis."""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT file_name, spin_score, challenger_score, deal_trajectory,
+               talk_ratio, created_at
+        FROM analyses
+        WHERE mode = 'External Sales Call'
+          AND (spin_score IS NOT NULL OR challenger_score IS NOT NULL)
+        ORDER BY created_at ASC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 # ---------------------------------------------------------------------------
 # Helper Functions — Audio
@@ -345,6 +507,33 @@ def analyze_transcript(client, transcript, mode):
 
 
 # ---------------------------------------------------------------------------
+# Helper Functions — Speaker Diarization
+# ---------------------------------------------------------------------------
+def diarize_transcript(client, transcript):
+    """Use GPT-4o to identify speakers and calculate talk ratio.
+
+    Returns a dict with diarized_transcript, speakers, and talk_ratio,
+    or None on failure.
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": DIARIZATION_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+        temperature=0.2,
+        max_tokens=4000,
+        response_format={"type": "json_object"},
+    )
+
+    raw = response.choices[0].message.content
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Helper Functions — Section Parsing
 # ---------------------------------------------------------------------------
 def extract_section(analysis, section_keyword):
@@ -419,9 +608,18 @@ def results_to_markdown(results):
     for file_name, result in results.items():
         parts.append(f"\n---\n\n## {file_name}\n")
         parts.append(f"**Mode:** {result.get('mode', 'N/A')}\n")
+        if result.get("talk_ratio") is not None and result["talk_ratio"] >= 0:
+            parts.append(
+                f"**Talk Ratio (Rep):** {result['talk_ratio']:.0%}\n"
+            )
         if "analysis" in result:
             parts.append(f"\n{result['analysis']}\n")
-        if "transcript" in result:
+        if "diarized_transcript" in result:
+            parts.append(
+                f"\n### Speaker-Labeled Transcript\n\n"
+                f"{result['diarized_transcript']}\n"
+            )
+        elif "transcript" in result:
             parts.append(f"\n### Raw Transcript\n\n{result['transcript']}\n")
         if "error" in result:
             parts.append(f"\n> **Error:** {result['error']}\n")
@@ -547,7 +745,7 @@ def get_salesforce_client():
 def push_to_salesforce(sf, fields, full_analysis):
     """Create a Task record in Salesforce with the call log data."""
     task_data = {
-        "Subject": fields.get("Subject", "Sales Call — SalesBuddy.ai")[:255],
+        "Subject": fields.get("Subject", "Sales Call \u2014 SalesBuddy.ai")[:255],
         "Description": full_analysis[:32000],
         "Status": "Completed",
         "Priority": "Normal",
@@ -584,9 +782,53 @@ def render_coaching_scorecard(scores):
     with cols[2]:
         if "trajectory" in scores:
             traj = scores["trajectory"]
-            icon, color = TRAJECTORY_CONFIG.get(traj, ("\u2753", "gray"))
+            icon, _color = TRAJECTORY_CONFIG.get(traj, ("\u2753", "gray"))
             label = traj.title()
             st.metric("Deal Trajectory", f"{icon} {label}")
+
+
+def render_talk_ratio(diarization_data):
+    """Render talk-to-listen ratio visualization."""
+    if not diarization_data:
+        return
+
+    talk_ratio = diarization_data.get("talk_ratio")
+    if talk_ratio is None or talk_ratio < 0:
+        return
+
+    speakers = diarization_data.get("speakers", {})
+    rep_info = speakers.get("Rep", {})
+    cust_info = speakers.get("Customer", {})
+
+    st.markdown("#### Talk-to-Listen Ratio")
+    cols = st.columns([1, 1, 1])
+
+    with cols[0]:
+        st.metric("Rep Speaking", f"{talk_ratio:.0%}")
+        st.progress(min(talk_ratio, 1.0))
+
+    with cols[1]:
+        listen_ratio = 1.0 - talk_ratio
+        st.metric("Customer Speaking", f"{listen_ratio:.0%}")
+        st.progress(min(listen_ratio, 1.0))
+
+    with cols[2]:
+        rep_words = rep_info.get("word_count", 0)
+        cust_words = cust_info.get("word_count", 0)
+        st.metric("Rep Words", f"{rep_words:,}")
+        st.metric("Customer Words", f"{cust_words:,}")
+
+    # Coaching tip based on ratio
+    if talk_ratio > 0.70:
+        st.warning(
+            "The rep spoke more than 70% of the time. "
+            "Best practice is 40\u201360% to allow the customer to share needs."
+        )
+    elif talk_ratio < 0.30:
+        st.info(
+            "The rep spoke less than 30% of the time. "
+            "Consider whether enough value was communicated."
+        )
 
 
 def render_copy_section(text, label, key):
@@ -596,35 +838,10 @@ def render_copy_section(text, label, key):
 
 
 # ---------------------------------------------------------------------------
-# Streamlit App
+# Page: Process
 # ---------------------------------------------------------------------------
-def main():
-    st.set_page_config(
-        page_title="SalesBuddy.ai",
-        page_icon="\U0001F3AF",
-        layout="wide",
-    )
-
-    st.title("SalesBuddy.ai")
-    st.caption("Sales & Meeting Intelligence for Henry Company")
-
-    # --- API key -----------------------------------------------------------
-    api_key = get_api_key()
-    if not api_key:
-        st.error(
-            "**OpenAI API key not found.** "
-            "Please configure it in one of the following ways:"
-        )
-        st.info(
-            "**Streamlit Community Cloud:** Add `OPENAI_API_KEY` in your app's "
-            "*Settings > Secrets* panel.\n\n"
-            "**Local development:** Create `.streamlit/secrets.toml` with:\n"
-            "```\nOPENAI_API_KEY = \"sk-...\"\n```\n"
-            "Or set the `OPENAI_API_KEY` environment variable."
-        )
-        st.stop()
-
-    client = OpenAI(api_key=api_key)
+def page_process(client):
+    """Main processing page — upload, transcribe, analyze, display."""
 
     # --- Session state -----------------------------------------------------
     for key, default in {
@@ -636,7 +853,7 @@ def main():
         if key not in st.session_state:
             st.session_state[key] = default
 
-    # --- Sidebar -----------------------------------------------------------
+    # --- Sidebar controls --------------------------------------------------
     with st.sidebar:
         st.header("Upload & Configure")
 
@@ -647,7 +864,6 @@ def main():
             help="Supports WAV, MP3, and M4A. Files over 25 MB are automatically split.",
         )
 
-        # Default mode + per-file overrides
         default_mode = st.radio(
             "Default Processing Mode",
             options=["External Sales Call", "Internal Meeting"],
@@ -666,6 +882,12 @@ def main():
                         key=f"mode_{uf.name}",
                     )
 
+        enable_diarization = st.checkbox(
+            "Enable Speaker Diarization",
+            value=False,
+            help="Identifies Rep vs Customer, calculates talk ratio. Adds one extra API call per file (~$0.01).",
+        )
+
         process_btn = st.button(
             "Process Files",
             type="primary",
@@ -675,7 +897,6 @@ def main():
 
         st.divider()
 
-        # Salesforce Integration Config
         with st.expander("Salesforce Integration (Optional)"):
             st.caption(
                 "Configure credentials to push call logs directly to Salesforce."
@@ -691,7 +912,7 @@ def main():
             )
 
         st.divider()
-        st.caption("SalesBuddy.ai v2.0 | Powered by OpenAI")
+        st.caption("SalesBuddy.ai v3.0 | Powered by OpenAI")
 
     # --- Helper to resolve per-file mode -----------------------------------
     def get_file_mode(file_name):
@@ -726,7 +947,7 @@ def main():
                     )
                     if num_chunks > 1:
                         st.write(
-                            f"File was split into {num_chunks} chunks for processing."
+                            f"File was split into {num_chunks} chunks."
                         )
                     st.write("Transcription complete.")
                 except Exception as exc:
@@ -737,7 +958,20 @@ def main():
                     status.update(label=f"Failed: {file_name}", state="error")
                     continue
 
-                # Step 2 — Analyze
+                # Step 2 — Diarization (optional)
+                diarization_data = None
+                if enable_diarization:
+                    st.write("Identifying speakers\u2026")
+                    try:
+                        diarization_data = diarize_transcript(client, transcript)
+                        if diarization_data:
+                            st.write("Speaker diarization complete.")
+                        else:
+                            st.write("Diarization returned no data.")
+                    except Exception as exc:
+                        st.warning(f"Diarization failed (non-fatal): {exc}")
+
+                # Step 3 — Analyze
                 st.write("Analyzing with GPT-4o\u2026")
                 try:
                     analysis = analyze_transcript(client, transcript, mode)
@@ -751,12 +985,35 @@ def main():
                     status.update(label=f"Failed: {file_name}", state="error")
                     continue
 
-                st.session_state.results[file_name] = {
+                # Build result
+                result_data = {
                     "transcript": transcript,
                     "analysis": analysis,
                     "mode": mode,
                 }
-                status.update(label=f"Completed: {file_name}", state="complete")
+
+                if diarization_data:
+                    result_data["diarization"] = diarization_data
+                    result_data["diarized_transcript"] = diarization_data.get(
+                        "diarized_transcript", ""
+                    )
+                    result_data["talk_ratio"] = diarization_data.get(
+                        "talk_ratio"
+                    )
+
+                st.session_state.results[file_name] = result_data
+
+                # Save to history database
+                try:
+                    save_analysis(
+                        file_name, mode, transcript, analysis, diarization_data
+                    )
+                except Exception as exc:
+                    st.warning(f"Could not save to history: {exc}")
+
+                status.update(
+                    label=f"Completed: {file_name}", state="complete"
+                )
 
         progress.progress(1.0, text="Batch processing complete.")
         st.session_state.processing = False
@@ -827,7 +1084,9 @@ def main():
         mode = result.get("mode", "Unknown")
         is_external = mode == "External Sales Call"
 
-        with st.expander(f"\U0001F4C4 {file_name} \u2014 {mode}", expanded=True):
+        with st.expander(
+            f"\U0001F4C4 {file_name} \u2014 {mode}", expanded=True
+        ):
             if "error" in result and "transcript" not in result:
                 st.error(result["error"])
                 continue
@@ -840,7 +1099,15 @@ def main():
                 scores = parse_scores(result["analysis"])
                 if scores:
                     render_coaching_scorecard(scores)
-                    st.divider()
+
+            # -- Talk ratio (if diarization was run) --
+            if result.get("diarization"):
+                render_talk_ratio(result["diarization"])
+
+            if (is_external and "analysis" in result) or result.get(
+                "diarization"
+            ):
+                st.divider()
 
             # -- Tabs --
             if is_external:
@@ -882,18 +1149,37 @@ def main():
 
             # Tab: Transcript
             with tabs[1]:
-                st.text_area(
-                    "Raw Transcript",
-                    value=result.get("transcript", ""),
-                    height=300,
-                    disabled=True,
-                    label_visibility="collapsed",
-                    key=f"ta_transcript_{file_name}",
-                )
+                # Show diarized transcript if available
+                if result.get("diarized_transcript"):
+                    st.markdown("**Speaker-Labeled Transcript:**")
+                    st.markdown(result["diarized_transcript"])
+                    st.divider()
+                    with st.expander("Raw Transcript (unlabeled)"):
+                        st.text_area(
+                            "Raw",
+                            value=result.get("transcript", ""),
+                            height=200,
+                            disabled=True,
+                            label_visibility="collapsed",
+                            key=f"ta_raw_{file_name}",
+                        )
+                else:
+                    st.text_area(
+                        "Raw Transcript",
+                        value=result.get("transcript", ""),
+                        height=300,
+                        disabled=True,
+                        label_visibility="collapsed",
+                        key=f"ta_transcript_{file_name}",
+                    )
+
                 if result.get("transcript"):
+                    dl_text = result.get("diarized_transcript") or result[
+                        "transcript"
+                    ]
                     st.download_button(
                         "\u2B07 Download Transcript",
-                        data=result["transcript"],
+                        data=dl_text,
                         file_name=f"{os.path.splitext(file_name)[0]}_transcript.txt",
                         mime="text/plain",
                         key=f"dl_transcript_{file_name}",
@@ -914,11 +1200,15 @@ def main():
                             f"copy_sf_{file_name}",
                         )
                     else:
-                        st.info("Salesforce log section not found in analysis.")
+                        st.info(
+                            "Salesforce log section not found in analysis."
+                        )
 
                 # Tab: Competitive Intel
                 with tabs[3]:
-                    ci_block = extract_section(analysis_text, "COMPETITIVE INTELLIGENCE")
+                    ci_block = extract_section(
+                        analysis_text, "COMPETITIVE INTELLIGENCE"
+                    )
                     if ci_block:
                         st.markdown(ci_block)
                         render_copy_section(
@@ -927,7 +1217,9 @@ def main():
                             f"copy_ci_{file_name}",
                         )
                     else:
-                        st.info("Competitive intelligence section not found.")
+                        st.info(
+                            "Competitive intelligence section not found."
+                        )
 
                 # Tab: Objections
                 with tabs[4]:
@@ -949,7 +1241,9 @@ def main():
                     email_key = file_name
                     if email_key in st.session_state.follow_up_emails:
                         st.markdown("**Draft Follow-Up Email:**")
-                        st.markdown(st.session_state.follow_up_emails[email_key])
+                        st.markdown(
+                            st.session_state.follow_up_emails[email_key]
+                        )
                         render_copy_section(
                             st.session_state.follow_up_emails[email_key],
                             "Follow-Up Email",
@@ -968,7 +1262,9 @@ def main():
                                 email = generate_follow_up_email(
                                     client, analysis_text
                                 )
-                                st.session_state.follow_up_emails[email_key] = email
+                                st.session_state.follow_up_emails[
+                                    email_key
+                                ] = email
                             st.rerun()
 
                 # Tab: Push to Salesforce
@@ -1005,7 +1301,343 @@ def main():
                                         f"Salesforce returned: {push_result}"
                                     )
                             except Exception as e:
-                                st.error(f"Failed to push to Salesforce: {e}")
+                                st.error(
+                                    f"Failed to push to Salesforce: {e}"
+                                )
+
+
+# ---------------------------------------------------------------------------
+# Page: History
+# ---------------------------------------------------------------------------
+def page_history():
+    """Browse past analyses saved to the local database."""
+    st.header("Session History")
+
+    total = get_history_count()
+    if total == 0:
+        st.info(
+            "No history yet. Process some audio files on the **Process** page "
+            "and they will appear here automatically."
+        )
+        return
+
+    st.caption(f"{total} saved analyses")
+
+    # Pagination
+    page_size = 10
+    total_pages = max(1, (total + page_size - 1) // page_size)
+
+    if "history_page" not in st.session_state:
+        st.session_state.history_page = 1
+
+    col_prev, col_info, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if st.button(
+            "\u25C0 Previous",
+            disabled=st.session_state.history_page <= 1,
+            use_container_width=True,
+        ):
+            st.session_state.history_page -= 1
+            st.rerun()
+    with col_info:
+        st.markdown(
+            f"<div style='text-align:center;padding-top:8px;'>"
+            f"Page {st.session_state.history_page} of {total_pages}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with col_next:
+        if st.button(
+            "Next \u25B6",
+            disabled=st.session_state.history_page >= total_pages,
+            use_container_width=True,
+        ):
+            st.session_state.history_page += 1
+            st.rerun()
+
+    offset = (st.session_state.history_page - 1) * page_size
+    entries = get_history(limit=page_size, offset=offset)
+
+    for entry in entries:
+        created = entry["created_at"][:16].replace("T", " ")
+        mode_tag = entry["mode"]
+        label = f"{entry['file_name']} \u2014 {mode_tag} \u2014 {created}"
+
+        with st.expander(label, expanded=False):
+            # Scores summary
+            score_parts = []
+            if entry.get("spin_score"):
+                score_parts.append(f"SPIN: {entry['spin_score'].title()}")
+            if entry.get("challenger_score"):
+                score_parts.append(
+                    f"Challenger: {entry['challenger_score'].title()}"
+                )
+            if entry.get("deal_trajectory"):
+                score_parts.append(
+                    f"Trajectory: {entry['deal_trajectory'].title()}"
+                )
+            if entry.get("talk_ratio") is not None:
+                score_parts.append(
+                    f"Talk Ratio: {entry['talk_ratio']:.0%}"
+                )
+            if score_parts:
+                st.markdown("**Scores:** " + " | ".join(score_parts))
+
+            tabs = st.tabs(["Analysis", "Transcript"])
+
+            with tabs[0]:
+                if entry.get("analysis"):
+                    st.markdown(entry["analysis"])
+                else:
+                    st.info("No analysis stored.")
+
+            with tabs[1]:
+                if entry.get("diarized_transcript"):
+                    st.markdown("**Speaker-Labeled Transcript:**")
+                    st.markdown(entry["diarized_transcript"])
+                elif entry.get("transcript"):
+                    st.text_area(
+                        "Transcript",
+                        value=entry["transcript"],
+                        height=200,
+                        disabled=True,
+                        label_visibility="collapsed",
+                        key=f"hist_transcript_{entry['id']}",
+                    )
+                else:
+                    st.info("No transcript stored.")
+
+            # Delete button
+            if st.button(
+                "Delete this entry",
+                key=f"del_{entry['id']}",
+            ):
+                delete_history_entry(entry["id"])
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Page: Coaching Trends
+# ---------------------------------------------------------------------------
+def page_coaching_trends():
+    """Display coaching score trends over time."""
+    st.header("Coaching Trends")
+
+    data = get_coaching_scores_over_time()
+
+    if not data:
+        st.info(
+            "No coaching data yet. Process some **External Sales Call** "
+            "recordings on the **Process** page to start tracking trends."
+        )
+        return
+
+    st.caption(f"Tracking {len(data)} external sales calls over time")
+
+    # Build DataFrame
+    records = []
+    for row in data:
+        dt = row["created_at"][:10]
+        records.append({
+            "date": dt,
+            "file": row["file_name"],
+            "SPIN": SCORE_NUMERIC.get(row.get("spin_score", ""), None),
+            "Challenger": SCORE_NUMERIC.get(
+                row.get("challenger_score", ""), None
+            ),
+            "Talk Ratio": row.get("talk_ratio"),
+            "spin_label": (row.get("spin_score") or "").title(),
+            "challenger_label": (row.get("challenger_score") or "").title(),
+            "trajectory": (row.get("deal_trajectory") or "").title(),
+        })
+
+    df = pd.DataFrame(records)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+
+    # --- SPIN & Challenger Scores Over Time ---
+    st.subheader("SPIN & Challenger Scores Over Time")
+    st.caption("Scale: 1 = Weak, 2 = Developing, 3 = Strong")
+
+    score_df = df[["date", "SPIN", "Challenger"]].dropna(
+        subset=["SPIN", "Challenger"], how="all"
+    )
+
+    if not score_df.empty:
+        chart_data = score_df.set_index("date")[["SPIN", "Challenger"]]
+        st.line_chart(chart_data, use_container_width=True)
+
+        # Summary metrics
+        cols = st.columns(4)
+        with cols[0]:
+            avg_spin = score_df["SPIN"].mean()
+            st.metric(
+                "Avg SPIN Score",
+                f"{avg_spin:.1f}",
+            )
+        with cols[1]:
+            avg_chall = score_df["Challenger"].mean()
+            st.metric(
+                "Avg Challenger Score",
+                f"{avg_chall:.1f}",
+            )
+        with cols[2]:
+            latest_spin = score_df["SPIN"].iloc[-1] if len(score_df) > 0 else 0
+            first_spin = score_df["SPIN"].iloc[0] if len(score_df) > 0 else 0
+            delta_spin = latest_spin - first_spin
+            st.metric(
+                "SPIN Trend",
+                f"{latest_spin:.0f}",
+                delta=f"{delta_spin:+.0f}" if delta_spin != 0 else "No change",
+            )
+        with cols[3]:
+            latest_chall = (
+                score_df["Challenger"].iloc[-1] if len(score_df) > 0 else 0
+            )
+            first_chall = (
+                score_df["Challenger"].iloc[0] if len(score_df) > 0 else 0
+            )
+            delta_chall = latest_chall - first_chall
+            st.metric(
+                "Challenger Trend",
+                f"{latest_chall:.0f}",
+                delta=(
+                    f"{delta_chall:+.0f}"
+                    if delta_chall != 0
+                    else "No change"
+                ),
+            )
+    else:
+        st.info("Not enough score data to chart yet.")
+
+    # --- Talk Ratio Over Time ---
+    st.divider()
+    st.subheader("Talk Ratio Over Time")
+    st.caption(
+        "Percentage of conversation spoken by the rep. "
+        "Ideal range: 40\u201360%."
+    )
+
+    talk_df = df[["date", "Talk Ratio", "file"]].dropna(subset=["Talk Ratio"])
+
+    if not talk_df.empty:
+        chart_talk = talk_df.set_index("date")[["Talk Ratio"]]
+        st.line_chart(chart_talk, use_container_width=True)
+
+        cols = st.columns(3)
+        with cols[0]:
+            avg_talk = talk_df["Talk Ratio"].mean()
+            st.metric("Average Talk Ratio", f"{avg_talk:.0%}")
+        with cols[1]:
+            min_talk = talk_df["Talk Ratio"].min()
+            st.metric("Lowest (Best Listening)", f"{min_talk:.0%}")
+        with cols[2]:
+            max_talk = talk_df["Talk Ratio"].max()
+            st.metric("Highest (Most Talking)", f"{max_talk:.0%}")
+    else:
+        st.info(
+            "No talk ratio data yet. Enable **Speaker Diarization** on the "
+            "Process page to start tracking."
+        )
+
+    # --- Deal Trajectory Distribution ---
+    st.divider()
+    st.subheader("Deal Trajectory Distribution")
+
+    traj_data = [
+        r["trajectory"] for r in records if r.get("trajectory")
+    ]
+    if traj_data:
+        traj_counts = pd.Series(traj_data).value_counts()
+        st.bar_chart(traj_counts)
+    else:
+        st.info("No deal trajectory data available.")
+
+    # --- Recent Calls Table ---
+    st.divider()
+    st.subheader("Recent Call Scores")
+
+    table_df = df[
+        [
+            "date",
+            "file",
+            "spin_label",
+            "challenger_label",
+            "trajectory",
+            "Talk Ratio",
+        ]
+    ].copy()
+    table_df.columns = [
+        "Date",
+        "File",
+        "SPIN",
+        "Challenger",
+        "Trajectory",
+        "Talk Ratio",
+    ]
+    table_df["Date"] = table_df["Date"].dt.strftime("%Y-%m-%d")
+    table_df["Talk Ratio"] = table_df["Talk Ratio"].apply(
+        lambda x: f"{x:.0%}" if pd.notna(x) else "\u2014"
+    )
+    table_df = table_df.sort_values("Date", ascending=False).head(20)
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Streamlit App — Main
+# ---------------------------------------------------------------------------
+def main():
+    st.set_page_config(
+        page_title="SalesBuddy.ai",
+        page_icon="\U0001F3AF",
+        layout="wide",
+    )
+
+    # Initialize database on startup
+    init_database()
+
+    # --- API key -----------------------------------------------------------
+    api_key = get_api_key()
+
+    # --- Page navigation (sidebar top) -------------------------------------
+    with st.sidebar:
+        page = st.radio(
+            "Navigate",
+            options=["Process", "History", "Coaching Trends"],
+            horizontal=True,
+        )
+
+    # --- Page routing ------------------------------------------------------
+    if page == "Process":
+        st.title("SalesBuddy.ai")
+        st.caption("Sales & Meeting Intelligence for Henry Company")
+
+        if not api_key:
+            st.error(
+                "**OpenAI API key not found.** "
+                "Please configure it in one of the following ways:"
+            )
+            st.info(
+                "**Streamlit Community Cloud:** Add `OPENAI_API_KEY` in your "
+                "app's *Settings > Secrets* panel.\n\n"
+                "**Local development:** Create `.streamlit/secrets.toml` with:\n"
+                "```\nOPENAI_API_KEY = \"sk-...\"\n```\n"
+                "Or set the `OPENAI_API_KEY` environment variable."
+            )
+            st.stop()
+
+        client = OpenAI(api_key=api_key)
+        page_process(client)
+
+    elif page == "History":
+        st.title("SalesBuddy.ai")
+        st.caption("Session History")
+        page_history()
+
+    elif page == "Coaching Trends":
+        st.title("SalesBuddy.ai")
+        st.caption("Coaching Performance Over Time")
+        page_coaching_trends()
 
 
 if __name__ == "__main__":

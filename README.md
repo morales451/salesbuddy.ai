@@ -9,6 +9,7 @@ Sales & Meeting Intelligence for Henry Company. Upload audio recordings from you
 - **Two analysis modes:**
   - **External Sales Call** — Salesforce activity log, SPIN/Challenger coaching, competitive intelligence, and objection handling analysis
   - **Internal Meeting** — meeting minutes, action items with owners, and decisions made
+- **Speaker diarization** — GPT-4o identifies Rep vs Customer turns, calculates talk-to-listen ratio with coaching tips (toggle on/off per batch)
 - **Visual coaching scorecard** — at-a-glance SPIN Selling, Challenger Sale, and Deal Trajectory gauges for each external call
 - **Competitive intelligence** — automatic extraction of competitor mentions, switching signals, and market intel
 - **Objection handling analysis** — identifies objections, evaluates rep responses, and suggests stronger alternatives
@@ -18,6 +19,8 @@ Sales & Meeting Intelligence for Henry Company. Upload audio recordings from you
 - **End-of-day pipeline summary** — generate a roll-up briefing across all processed calls: accounts touched, aggregate next steps, pipeline health, and top priorities for tomorrow
 - **Follow-up email drafts** — auto-generate a professional follow-up email based on any external call's analysis
 - **Salesforce API integration** — push call logs directly to Salesforce as completed Task records (optional, requires credentials)
+- **Session history** — all analyses are persisted to a local SQLite database; browse, review, and delete past sessions
+- **Coaching trends** — track SPIN/Challenger scores, talk ratio, and deal trajectories over time with line charts, summary metrics, and a recent calls table
 - **Auto-chunking** — files over 25 MB are automatically split so they fit within the Whisper API limit
 - **Henry Company context** — the AI is primed with your product portfolio, industry terms, and territory details
 
@@ -84,24 +87,41 @@ The app opens at `http://localhost:8501`.
 
 5. Click **Deploy**. The app will install dependencies from `requirements.txt` automatically. `ffmpeg` is pre-installed on Streamlit Cloud's runtime.
 
+> **Note:** Session history uses a local SQLite database (`.salesbuddy_data/history.db`). On Streamlit Community Cloud, this data resets on each redeploy. For persistent history in cloud environments, consider using an external database.
+
 ---
 
 ## Usage
 
-1. Open the app in your browser.
-2. In the **sidebar**, upload one or more audio files (WAV, MP3, or M4A).
-3. Select the **Default Processing Mode** — or expand "Per-file mode overrides" to set each file individually.
+The app has three pages, accessible via the sidebar navigation:
+
+### Process
+1. Upload one or more audio files (WAV, MP3, or M4A).
+2. Select the **Default Processing Mode** — or expand "Per-file mode overrides" to set each file individually.
+3. Optionally check **Enable Speaker Diarization** to identify Rep vs Customer and calculate talk ratio.
 4. Click **Process Files**.
 5. Review results:
-   - **Coaching Scorecard** — visual gauges for SPIN, Challenger, and Deal Trajectory (external calls)
+   - **Coaching Scorecard** — visual gauges for SPIN, Challenger, and Deal Trajectory
+   - **Talk-to-Listen Ratio** — Rep vs Customer speaking percentage with coaching tips (when diarization is enabled)
    - **Analysis tab** — full analysis with download and copy buttons
-   - **Transcript tab** — raw transcript with download
+   - **Transcript tab** — speaker-labeled transcript (if diarized) or raw transcript
    - **Salesforce Log tab** — isolated Salesforce block with one-click copy
    - **Competitive Intel tab** — competitor mentions and market intelligence
    - **Objections tab** — objection handling analysis with coaching suggestions
    - **Follow-Up Email tab** — generate and copy a professional follow-up email
    - **Push to SF tab** — push the call log directly to Salesforce
 6. Use the **global action bar** to download the full report, export Salesforce CSV, or generate a pipeline summary.
+
+### History
+- Browse all past analyses with scores, transcripts, and full analysis text.
+- Paginated view with 10 entries per page.
+- Delete individual entries to clean up.
+
+### Coaching Trends
+- **SPIN & Challenger Scores Over Time** — line chart with averages and first-to-last trend deltas.
+- **Talk Ratio Over Time** — line chart showing rep speaking percentage with min/max/average.
+- **Deal Trajectory Distribution** — bar chart of win/loss/neutral trends.
+- **Recent Call Scores** — sortable table of the last 20 calls with all metrics.
 
 ---
 
@@ -118,16 +138,29 @@ The integration creates a completed Task record in Salesforce with the call subj
 
 ---
 
+## Data Storage
+
+Session history is stored in a local SQLite database at `.salesbuddy_data/history.db`. This directory is git-ignored by default.
+
+To customize the data directory, set the `SALESBUDDY_DATA_DIR` environment variable:
+
+```bash
+export SALESBUDDY_DATA_DIR="/path/to/data"
+```
+
+---
+
 ## Cost Estimates
 
-| Operation         | Model     | Approximate Cost                          |
-|-------------------|-----------|-------------------------------------------|
-| Transcription     | whisper-1 | $0.006 per minute of audio                |
-| Analysis          | gpt-4o    | ~$0.01–0.03 per call (varies by length)   |
-| Pipeline Summary  | gpt-4o    | ~$0.02–0.05 per summary                   |
-| Follow-Up Email   | gpt-4o    | ~$0.005 per email                         |
+| Operation          | Model     | Approximate Cost                          |
+|--------------------|-----------|-------------------------------------------|
+| Transcription      | whisper-1 | $0.006 per minute of audio                |
+| Analysis           | gpt-4o    | ~$0.01–0.03 per call (varies by length)   |
+| Diarization        | gpt-4o    | ~$0.01 per call (optional)                |
+| Pipeline Summary   | gpt-4o    | ~$0.02–0.05 per summary                   |
+| Follow-Up Email    | gpt-4o    | ~$0.005 per email                         |
 
-**Example:** A 30-minute sales call costs roughly **$0.20** ($0.18 transcription + ~$0.02 analysis).
+**Example:** A 30-minute sales call with diarization costs roughly **$0.21** ($0.18 transcription + ~$0.02 analysis + ~$0.01 diarization).
 
 ---
 
@@ -137,8 +170,10 @@ The integration creates a completed Task record in Salesforce with the call subj
 salesbuddy.ai/
 ├── app.py                 # Streamlit application (all features)
 ├── requirements.txt       # Python dependencies
-├── .gitignore             # Excludes secrets and artifacts
+├── .gitignore             # Excludes secrets, data, and artifacts
 ├── .streamlit/
 │   └── config.toml        # Theme and upload size settings
+├── .salesbuddy_data/      # Local SQLite database (git-ignored)
+│   └── history.db
 └── README.md              # This file
 ```
