@@ -395,6 +395,45 @@ def delete_history_entry(entry_id):
     conn.close()
 
 
+def search_history(query, mode_filter=None, limit=50):
+    """Full-text search across transcripts, analyses, and file names.
+
+    Returns matching rows with a snippet of the matching context.
+    """
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+
+    # Use LIKE for broad matching — works well for small local datasets
+    like_pattern = f"%{query}%"
+    params = [like_pattern, like_pattern, like_pattern]
+
+    mode_clause = ""
+    if mode_filter and mode_filter != "All":
+        mode_clause = "AND mode = ?"
+        params.append(mode_filter)
+
+    params.append(limit)
+
+    rows = conn.execute(
+        f"""
+        SELECT id, file_name, mode, transcript, diarized_transcript, analysis,
+               spin_score, challenger_score, deal_trajectory, talk_ratio, created_at
+        FROM analyses
+        WHERE (
+            transcript LIKE ? COLLATE NOCASE
+            OR analysis LIKE ? COLLATE NOCASE
+            OR file_name LIKE ? COLLATE NOCASE
+        )
+        {mode_clause}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_coaching_scores_over_time():
     """Retrieve coaching scores over time for trend analysis."""
     conn = sqlite3.connect(str(DB_PATH))
@@ -1584,6 +1623,180 @@ def page_coaching_trends():
 
 
 # ---------------------------------------------------------------------------
+# Page: Search
+# ---------------------------------------------------------------------------
+def _highlight_matches(text, query, context_chars=120):
+    """Return a list of text snippets with the query highlighted in markdown bold."""
+    if not text or not query:
+        return []
+
+    snippets = []
+    lower_text = text.lower()
+    lower_query = query.lower()
+    start = 0
+
+    while True:
+        idx = lower_text.find(lower_query, start)
+        if idx == -1:
+            break
+
+        # Extract surrounding context
+        snippet_start = max(0, idx - context_chars)
+        snippet_end = min(len(text), idx + len(query) + context_chars)
+
+        before = text[snippet_start:idx]
+        match = text[idx : idx + len(query)]
+        after = text[idx + len(query) : snippet_end]
+
+        prefix = "\u2026" if snippet_start > 0 else ""
+        suffix = "\u2026" if snippet_end < len(text) else ""
+
+        snippets.append(f"{prefix}{before}**{match}**{after}{suffix}")
+
+        start = idx + len(query)
+
+        if len(snippets) >= 3:
+            break
+
+    return snippets
+
+
+def page_search():
+    """Full-text search across all stored transcripts and analyses."""
+    st.header("Search History")
+
+    # Search controls
+    col_query, col_mode = st.columns([3, 1])
+
+    with col_query:
+        query = st.text_input(
+            "Search transcripts and analyses",
+            placeholder="e.g., Carlisle, warehouse project, Pro-Grade 988...",
+            key="search_query",
+        )
+
+    with col_mode:
+        mode_filter = st.selectbox(
+            "Filter by mode",
+            options=["All", "External Sales Call", "Internal Meeting"],
+            key="search_mode_filter",
+        )
+
+    if not query:
+        st.info(
+            "Enter a search term to find it across all stored transcripts, "
+            "analyses, and file names."
+        )
+        return
+
+    if len(query) < 2:
+        st.warning("Please enter at least 2 characters.")
+        return
+
+    # Execute search
+    results = search_history(query, mode_filter if mode_filter != "All" else None)
+
+    if not results:
+        st.warning(f'No results found for "{query}".')
+        return
+
+    st.caption(f'{len(results)} result{"s" if len(results) != 1 else ""} for "{query}"')
+
+    for entry in results:
+        created = entry["created_at"][:16].replace("T", " ")
+        mode_tag = entry["mode"]
+
+        # Determine where the match was found
+        match_locations = []
+        if entry.get("file_name") and query.lower() in entry["file_name"].lower():
+            match_locations.append("filename")
+        if entry.get("transcript") and query.lower() in entry["transcript"].lower():
+            match_locations.append("transcript")
+        if entry.get("analysis") and query.lower() in entry["analysis"].lower():
+            match_locations.append("analysis")
+
+        match_tag = ", ".join(match_locations) if match_locations else "match"
+        label = (
+            f"{entry['file_name']} \u2014 {mode_tag} \u2014 "
+            f"{created} [{match_tag}]"
+        )
+
+        with st.expander(label, expanded=False):
+            # Score summary
+            score_parts = []
+            if entry.get("spin_score"):
+                score_parts.append(f"SPIN: {entry['spin_score'].title()}")
+            if entry.get("challenger_score"):
+                score_parts.append(
+                    f"Challenger: {entry['challenger_score'].title()}"
+                )
+            if entry.get("deal_trajectory"):
+                score_parts.append(
+                    f"Trajectory: {entry['deal_trajectory'].title()}"
+                )
+            if entry.get("talk_ratio") is not None:
+                score_parts.append(f"Talk Ratio: {entry['talk_ratio']:.0%}")
+            if score_parts:
+                st.markdown("**Scores:** " + " | ".join(score_parts))
+
+            # Show highlighted snippets
+            st.markdown("---")
+            shown_snippet = False
+
+            # Transcript matches
+            transcript_text = (
+                entry.get("diarized_transcript") or entry.get("transcript") or ""
+            )
+            transcript_snippets = _highlight_matches(transcript_text, query)
+            if transcript_snippets:
+                st.markdown("**Matches in transcript:**")
+                for snippet in transcript_snippets:
+                    st.markdown(f"> {snippet}")
+                shown_snippet = True
+
+            # Analysis matches
+            analysis_snippets = _highlight_matches(
+                entry.get("analysis", ""), query
+            )
+            if analysis_snippets:
+                if shown_snippet:
+                    st.markdown("")
+                st.markdown("**Matches in analysis:**")
+                for snippet in analysis_snippets:
+                    st.markdown(f"> {snippet}")
+                shown_snippet = True
+
+            if not shown_snippet:
+                st.markdown(f"*Match found in file name: {entry['file_name']}*")
+
+            # Full content tabs
+            st.markdown("---")
+            tabs = st.tabs(["Full Analysis", "Full Transcript"])
+
+            with tabs[0]:
+                if entry.get("analysis"):
+                    st.markdown(entry["analysis"])
+                else:
+                    st.info("No analysis stored.")
+
+            with tabs[1]:
+                if entry.get("diarized_transcript"):
+                    st.markdown("**Speaker-Labeled Transcript:**")
+                    st.markdown(entry["diarized_transcript"])
+                elif entry.get("transcript"):
+                    st.text_area(
+                        "Transcript",
+                        value=entry["transcript"],
+                        height=200,
+                        disabled=True,
+                        label_visibility="collapsed",
+                        key=f"search_transcript_{entry['id']}",
+                    )
+                else:
+                    st.info("No transcript stored.")
+
+
+# ---------------------------------------------------------------------------
 # Streamlit App — Main
 # ---------------------------------------------------------------------------
 def main():
@@ -1603,7 +1816,7 @@ def main():
     with st.sidebar:
         page = st.radio(
             "Navigate",
-            options=["Process", "History", "Coaching Trends"],
+            options=["Process", "History", "Search", "Coaching Trends"],
             horizontal=True,
         )
 
@@ -1633,6 +1846,11 @@ def main():
         st.title("SalesBuddy.ai")
         st.caption("Session History")
         page_history()
+
+    elif page == "Search":
+        st.title("SalesBuddy.ai")
+        st.caption("Search Across All Sessions")
+        page_search()
 
     elif page == "Coaching Trends":
         st.title("SalesBuddy.ai")
