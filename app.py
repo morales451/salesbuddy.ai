@@ -190,6 +190,53 @@ _DEMO_ANALYSIS_SALES = """\
 1. Deliver the spec comparison before Tuesday to give Mike time to review with the owner
 2. Confirm the technical rep visit is locked in — this is the key competitive differentiator
 3. On the site visit, engage the owner directly on warranty value and weight-load savings
+
+---
+
+### COMPETITIVE INTELLIGENCE
+
+**Competitors Mentioned:** Carlisle SynTec (TPO recover system)
+
+**Competitive Context:**
+- Carlisle TPO recover was one of three bids submitted for this 80-square warehouse project. The Carlisle bid appears to be positioned on lower upfront material cost compared to a full tear-off/re-roof.
+- GAF was not mentioned directly but is a known competitor in the Texas commercial market and may be behind one of the other two bids.
+
+**Customer Sentiment on Competitors:**
+- Customer did not express strong brand loyalty to Carlisle — mentioned the bid matter-of-factly as one of several options.
+- No negative sentiment toward Henry Company; existing relationship with rep suggests positive prior experience.
+- Owner's primary driver is cost, not brand preference — creates an opening for whoever demonstrates the best total value.
+
+**Switching Signals:**
+- Customer voluntarily shared competitor bid details (Carlisle TPO recover) — indicates trust and openness to alternatives.
+- No signed contracts yet; decision is still in evaluation phase across all three bids.
+- Customer agreed to a Henry-sponsored technical assessment — strong engagement signal.
+
+**Market Intelligence:**
+- Carlisle is actively bidding TPO recovers in the DFW/North Texas industrial corridor, competing on material cost.
+- Building owners in this segment are price-sensitive and resistant to tear-off due to business disruption and disposal costs.
+- Silicone restoration systems have a compelling TCO story vs. TPO recovers when presented with full labor + disposal math.
+
+---
+
+### OBJECTION HANDLING ANALYSIS
+
+**Objection 1:**
+- **Objection:** Budget sticker shock — owner is getting high tear-off quotes and is concerned about overall project cost.
+- **Rep's Response:** Repositioned silicone restoration as 30–40% less total cost than tear-off alternatives by including recover board, labor, and disposal in the comparison. Also noted that restoration adds no weight to the deck structure.
+- **Effectiveness:** Effective
+- **Suggested Alternative:** Strengthen with a specific dollar-per-square comparison (e.g., "We're typically seeing $3.50–$4.00/sq ft installed vs. $6–$7 for a TPO recover with board") to make the savings tangible rather than percentage-based.
+
+**Objection 2:**
+- **Objection:** Competitor pricing — Carlisle TPO recover bid appears lower on material cost.
+- **Rep's Response:** Reframed the comparison from material-only to total installed cost, highlighting hidden costs in the Carlisle approach (recover board, labor, disposal) that erode the apparent material savings.
+- **Effectiveness:** Effective
+- **Suggested Alternative:** Ask the customer to share the Carlisle bid's total installed price (not just material) so you can build a true apples-to-apples comparison in the spec sheet. This turns the objection into a data-gathering opportunity.
+
+**Objection 3:**
+- **Objection:** Uncertainty about existing roof condition — no core samples taken, risk that insulation may be compromised under the BUR membrane.
+- **Rep's Response:** Proactively raised this as a risk that should be resolved before any commitment, and offered a free technical assessment with core sampling. Positioned this as a consultative differentiator vs. competitors who hadn't raised the issue.
+- **Effectiveness:** Effective
+- **Suggested Alternative:** N/A — this was handled excellently. The rep identified a latent risk, offered a no-cost solution, and created a reason for the next meeting. Textbook consultative selling.
 """
 
 _DEMO_TRANSCRIPT_MEETING = """\
@@ -316,6 +363,66 @@ DEMO_RESULTS = {
         "_is_demo": True,
     },
 }
+
+_DEMO_FOLLOW_UP_EMAIL = """\
+Hi Mike,
+
+Great talking with you today about the Industrial Parkway warehouse project. \
+I'm glad we got a chance to dig into the details on that 80-square BUR roof.
+
+As discussed, I'd like to get our technical rep out to the site to pull a few \
+core samples and assess the existing insulation before anyone commits to a scope. \
+It's a no-cost visit and takes about an hour. If you can confirm a Tuesday that \
+works for the owner, I'll get it scheduled right away.
+
+In the meantime, I'm putting together a side-by-side spec comparison of our \
+Pro-Grade 988 Silicone Restoration System versus the Carlisle TPO recover option, \
+including full installed cost breakdowns. I'll have that over to you before the \
+site visit so you and the owner can review it ahead of time.
+
+Looking forward to getting this one dialed in. Text me those dates when you can.
+
+[Your Name]
+"""
+
+_DEMO_PIPELINE_SUMMARY = """\
+## End-of-Day Pipeline Summary
+
+### Active Opportunities
+
+| Opportunity | Account | Stage | Est. Value | Next Action | Risk Level |
+|---|---|---|---|---|---|
+| Warehouse Flat Roof Restoration | Mike / Industrial Parkway | Evaluation (3 bids in) | ~$40K–$55K (80 sq @ $5–$7/sq ft) | Technical assessment + core sampling (Tuesday TBD) | Medium |
+
+### Key Highlights
+
+- **Warehouse Restoration (Industrial Parkway):** Strong call with contractor Mike. \
+Henry Pro-Grade 988 is well-positioned against Carlisle TPO recover on total cost \
+(30–40% savings vs. tear-off). Rep differentiated by raising core-sample risk that \
+competitors missed. Secured agreement for free technical site visit. Deal trajectory \
+is **Trending Win** but three competing bids remain in play and the building owner \
+was not on the call.
+
+### Internal Meeting Takeaways
+
+- **Q3 Results:** Territory closed at $1.2M (94% of target). Houston strong; DFW \
+soft at 71% — two contractor accounts lost to GAF rebate program.
+- **DFW Recovery:** One lost account showing re-engagement signals after a bad GAF \
+install. Lunch meeting scheduled next week. Needs competitive TPO vs. GAF EverGuard \
+spec sheet + potential warranty upgrade offer.
+- **Q4 TPO Launch:** November 3 launch date confirmed. Samples available October 20. \
+Rep identifying top 5 target accounts by Friday.
+- **Salesforce Migration:** New activity logging template goes live October 1. \
+Training module due by September 28.
+
+### Recommended Priorities for Tomorrow
+
+1. Confirm Tuesday site visit date with Mike (warehouse project)
+2. Send Pro-Grade 988 vs. Carlisle spec comparison to Mike
+3. Prepare for DFW contractor recovery lunch — bring competitive spec sheet
+4. Complete Salesforce training module before September 28 deadline
+5. Finalize Q4 TPO launch target account list in Salesforce by Friday
+"""
 
 # ---------------------------------------------------------------------------
 # System Prompts
@@ -1193,8 +1300,9 @@ def page_process(client):
         process_btn = st.button(
             "Process Files",
             type="primary",
-            disabled=(not uploaded_files) or st.session_state.processing,
+            disabled=(not uploaded_files) or st.session_state.processing or (client is None),
             use_container_width=True,
+            help="Requires OpenAI API key" if client is None else None,
         )
 
         demo_btn = st.button(
@@ -1229,12 +1337,26 @@ def page_process(client):
     # --- Demo mode ---------------------------------------------------------
     if demo_btn:
         st.session_state.results = dict(DEMO_RESULTS)
-        st.session_state.pipeline_summary = None
-        st.session_state.follow_up_emails = {}
+        st.session_state.pipeline_summary = _DEMO_PIPELINE_SUMMARY
+        st.session_state.follow_up_emails = {
+            "demo_warehouse_call.m4a": _DEMO_FOLLOW_UP_EMAIL,
+        }
+        # Persist to history DB so History / Search / Coaching Trends work
+        for _fname, _res in DEMO_RESULTS.items():
+            try:
+                save_analysis(
+                    _fname,
+                    _res["mode"],
+                    _res["transcript"],
+                    _res["analysis"],
+                    _res.get("diarization"),
+                )
+            except Exception:
+                pass  # non-fatal — demo still works without DB
         st.toast("Demo loaded! Explore all features below.", icon="▶")
 
     # --- Kick off processing -----------------------------------------------
-    if process_btn and uploaded_files:
+    if process_btn and uploaded_files and client is not None:
         st.session_state.processing = True
         st.session_state.results = {}
         st.session_state.pipeline_summary = None
@@ -1374,7 +1496,17 @@ def page_process(client):
         )
 
     with action_cols[2]:
-        if st.button(
+        if st.session_state.pipeline_summary:
+            # Already have a summary (pre-baked or generated) — show refresh
+            pass
+        elif client is None:
+            st.button(
+                "\U0001F4CA Pipeline Summary",
+                use_container_width=True,
+                disabled=True,
+                help="Requires OpenAI API key",
+            )
+        elif st.button(
             "\U0001F4CA Generate Pipeline Summary", use_container_width=True
         ):
             with st.spinner("Generating end-of-day pipeline summary\u2026"):
@@ -1575,22 +1707,30 @@ def page_process(client):
                             f"copy_email_{file_name}",
                         )
                     else:
-                        st.info(
-                            "Click below to generate a follow-up email based on "
-                            "this call's analysis."
-                        )
-                        if st.button(
-                            "Generate Follow-Up Email",
-                            key=f"gen_email_{file_name}",
-                        ):
-                            with st.spinner("Drafting follow-up email\u2026"):
-                                email = generate_follow_up_email(
-                                    client, analysis_text
-                                )
-                                st.session_state.follow_up_emails[
-                                    email_key
-                                ] = email
-                            st.rerun()
+                        if client is None:
+                            st.info(
+                                "Set up an OpenAI API key to generate "
+                                "follow-up emails from real call analyses."
+                            )
+                        else:
+                            st.info(
+                                "Click below to generate a follow-up email "
+                                "based on this call's analysis."
+                            )
+                            if st.button(
+                                "Generate Follow-Up Email",
+                                key=f"gen_email_{file_name}",
+                            ):
+                                with st.spinner(
+                                    "Drafting follow-up email\u2026"
+                                ):
+                                    email = generate_follow_up_email(
+                                        client, analysis_text
+                                    )
+                                    st.session_state.follow_up_emails[
+                                        email_key
+                                    ] = email
+                                st.rerun()
 
                 # Tab: Push to Salesforce
                 with tabs[6]:
@@ -2111,21 +2251,19 @@ def main():
         st.title("SalesBuddy.ai")
         st.caption("Sales & Meeting Intelligence for Henry Company")
 
-        if not api_key:
-            st.error(
+        client = None
+        if api_key:
+            client = OpenAI(api_key=api_key)
+        else:
+            st.warning(
                 "**OpenAI API key not found.** "
-                "Please configure it in one of the following ways:"
+                "You can still explore Demo Mode, but uploading real audio "
+                "requires an API key.\n\n"
+                "**Streamlit Community Cloud:** Add `OPENAI_API_KEY` in "
+                "*Settings > Secrets*.\n\n"
+                "**Local:** Create `.streamlit/secrets.toml` with "
+                "`OPENAI_API_KEY = \"sk-...\"` or set the env var."
             )
-            st.info(
-                "**Streamlit Community Cloud:** Add `OPENAI_API_KEY` in your "
-                "app's *Settings > Secrets* panel.\n\n"
-                "**Local development:** Create `.streamlit/secrets.toml` with:\n"
-                "```\nOPENAI_API_KEY = \"sk-...\"\n```\n"
-                "Or set the `OPENAI_API_KEY` environment variable."
-            )
-            st.stop()
-
-        client = OpenAI(api_key=api_key)
         page_process(client)
 
     elif page == "History":
