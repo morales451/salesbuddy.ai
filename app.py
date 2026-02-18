@@ -32,8 +32,6 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydub import AudioSegment
-
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -54,6 +52,270 @@ TRAJECTORY_CONFIG = {
 
 DATA_DIR = Path(os.environ.get("SALESBUDDY_DATA_DIR", ".salesbuddy_data"))
 DB_PATH = DATA_DIR / "history.db"
+
+# ---------------------------------------------------------------------------
+# Demo Data
+# ---------------------------------------------------------------------------
+_DEMO_TRANSCRIPT_SALES = """\
+Hey Mike, this is Jake Morales calling from Henry Company. How's it going today?
+
+Oh hey Jake, doing pretty well, just got out of a job walk. What's up?
+
+Good to hear. I wanted to follow up on that flat roof project you mentioned last month — \
+the warehouse complex over on Industrial Parkway. You said the owner was getting some bids together.
+
+Yeah, that's right. Actually we got three bids back and we're reviewing them now. \
+The roof is about 80 squares, showing some ponding water and a few seams that have let go.
+
+Got it. What's the current substrate — is that a TPO or a built-up system under there?
+
+Built-up. Original install, probably 20 years old. No major leaks but the owner doesn't \
+want to tear off if he doesn't have to.
+
+That's exactly where Henry's silicone restoration system shines. The Pro-Grade 988 is \
+engineered specifically for that scenario — it bonds directly to aged BUR without a tear-off, \
+carries a 10-year NDL warranty, and handles ponding water better than anything in its class. \
+What's the owner's main concern right now — budget, warranty, or longevity?
+
+Honestly, budget's tight. He's getting sticker shock on the tear-off quotes. \
+One of the other bids is a Carlisle TPO recover.
+
+Yeah Carlisle's going to come in lower on material, but when you factor in the recover \
+board, the labor, and the disposal — a silicone restoration is typically 30 to 40 percent \
+less total cost. And you're not adding weight to the deck. Has anyone done a core sample \
+to confirm the existing insulation is dry?
+
+That's a good point. I don't think anyone's pulled a core yet.
+
+That's worth doing before anyone commits. If the insulation's compromised you need to \
+know that up front. I can get our technical rep out there to do a free assessment and \
+pull a couple cores — takes about an hour. Would the owner be open to that before he makes a decision?
+
+Yeah I think so. Let me check his schedule. He's usually on site Tuesdays.
+
+Perfect. If you can get me a Tuesday that works I'll have our tech guy out there. \
+I'll also put together a spec comparison showing Pro-Grade 988 versus the Carlisle recover \
+so the owner can see the cost breakdown side by side.
+
+That'd be helpful. I'll text you some dates.
+
+Sounds good Mike. Talk soon.
+"""
+
+_DEMO_DIARIZED_TRANSCRIPT_SALES = """\
+**Rep (Jake Morales):** Hey Mike, this is Jake Morales calling from Henry Company. How's it going today?
+
+**Customer (Mike):** Oh hey Jake, doing pretty well, just got out of a job walk. What's up?
+
+**Rep (Jake Morales):** Good to hear. I wanted to follow up on that flat roof project you mentioned last month — the warehouse complex over on Industrial Parkway. You said the owner was getting some bids together.
+
+**Customer (Mike):** Yeah, that's right. Actually we got three bids back and we're reviewing them now. The roof is about 80 squares, showing some ponding water and a few seams that have let go.
+
+**Rep (Jake Morales):** Got it. What's the current substrate — is that a TPO or a built-up system under there?
+
+**Customer (Mike):** Built-up. Original install, probably 20 years old. No major leaks but the owner doesn't want to tear off if he doesn't have to.
+
+**Rep (Jake Morales):** That's exactly where Henry's silicone restoration system shines. The Pro-Grade 988 is engineered specifically for that scenario — it bonds directly to aged BUR without a tear-off, carries a 10-year NDL warranty, and handles ponding water better than anything in its class. What's the owner's main concern right now — budget, warranty, or longevity?
+
+**Customer (Mike):** Honestly, budget's tight. He's getting sticker shock on the tear-off quotes. One of the other bids is a Carlisle TPO recover.
+
+**Rep (Jake Morales):** Yeah Carlisle's going to come in lower on material, but when you factor in the recover board, the labor, and the disposal — a silicone restoration is typically 30 to 40 percent less total cost. And you're not adding weight to the deck. Has anyone done a core sample to confirm the existing insulation is dry?
+
+**Customer (Mike):** That's a good point. I don't think anyone's pulled a core yet.
+
+**Rep (Jake Morales):** That's worth doing before anyone commits. If the insulation's compromised you need to know that up front. I can get our technical rep out there to do a free assessment and pull a couple cores — takes about an hour. Would the owner be open to that before he makes a decision?
+
+**Customer (Mike):** Yeah I think so. Let me check his schedule. He's usually on site Tuesdays.
+
+**Rep (Jake Morales):** Perfect. If you can get me a Tuesday that works I'll have our tech guy out there. I'll also put together a spec comparison showing Pro-Grade 988 versus the Carlisle recover so the owner can see the cost breakdown side by side.
+
+**Customer (Mike):** That'd be helpful. I'll text you some dates.
+
+**Rep (Jake Morales):** Sounds good Mike. Talk soon.
+"""
+
+_DEMO_ANALYSIS_SALES = """\
+### SALESFORCE ACTIVITY LOG
+
+**Subject:** Follow-Up Call — Warehouse Flat Roof Restoration Opportunity (Industrial Parkway)
+
+**Account / Client Name:** Mike [Contractor] — Industrial Parkway Warehouse Project
+
+**Relationship Status:** Active Opportunity
+
+**Products Discussed:** Pro-Grade 988 Silicone Restoration System, 10-Year NDL Warranty Program
+
+**Next Steps:**
+- Schedule free technical assessment + core sampling for a Tuesday (rep to confirm with Mike via text)
+- Prepare Pro-Grade 988 vs. Carlisle TPO recover spec comparison with cost breakdown
+- Follow up with Mike within 3 business days to confirm site visit date
+
+---
+
+### SALES COACH ANALYSIS
+
+#### SPIN Selling Assessment
+
+- **Situation Questions:** ✅ Strong — Rep quickly identified substrate type (BUR, 20 years old), roof size (80 squares), current condition (ponding, seam failures), and competitive bid landscape.
+- **Problem Questions:** ✅ Strong — Uncovered the owner's resistance to tear-off and budget sticker shock organically; drew out the core-sample gap as an unaddressed risk.
+- **Implication Questions:** 🔶 Developing — Touched on the cost implications of tear-off vs. restoration (30–40% savings), but could have pressed harder on the risk of proceeding without a core sample (potential hidden damage escalating cost).
+- **Need-Payoff Questions:** ✅ Strong — "What's the owner's main concern right now — budget, warranty, or longevity?" is a textbook need-payoff setup that lets the customer self-identify priorities.
+
+**Overall SPIN Score: Strong**
+
+#### Challenger Sale Assessment
+
+- **Teach:** ✅ Strong — Rep educated the customer on ponding water performance advantage of silicone vs. TPO, introduced the core sampling concept (which no competitor had raised), and reframed the cost comparison to include recover board and disposal.
+- **Tailor:** 🔶 Developing — Message was well-targeted to a budget-sensitive owner, but rep could have asked more about the owner's decision timeline and who else influences the final call.
+- **Take Control:** ✅ Strong — Rep steered toward a concrete next step (free technical assessment) without being pushy, and offered a spec comparison to neutralize the Carlisle comparison on the owner's terms.
+
+**Overall Challenger Score: Strong**
+
+#### Win/Loss Indicator
+
+**Deal Trajectory: Trending Win**
+
+**Positive Signals:**
+- Customer engaged and receptive throughout; no price objections to the restoration approach
+- Competitor bid (Carlisle TPO recover) has a cost disadvantage once total project cost is explained
+- Rep secured agreement to explore a technical site visit — a strong closing motion
+- Core sample concept differentiates Henry's consultative approach from transactional competitors
+
+**Risk Factors:**
+- Three competing bids already in play — deal is not exclusive
+- Owner not present on the call; Mike the contractor may not be the final decision-maker
+- Budget sensitivity could shift decision to lowest upfront cost if spec comparison isn't compelling
+
+**Recommended Actions:**
+1. Deliver the spec comparison before Tuesday to give Mike time to review with the owner
+2. Confirm the technical rep visit is locked in — this is the key competitive differentiator
+3. On the site visit, engage the owner directly on warranty value and weight-load savings
+"""
+
+_DEMO_TRANSCRIPT_MEETING = """\
+Alright, let's get started. We've got about 30 minutes. Agenda today is Q3 territory review, \
+the new TPO product launch timeline, and a quick update on the Salesforce rollout.
+
+Starting with territory — Jake, you want to run through your numbers?
+
+Sure. Q3 closed at 1.2 million, which is 94% of target. Houston metro was strong, \
+drove about 60% of revenue. DFW was soft — only 71% of target. The issue there is \
+we lost two contractor accounts to GAF's rebate program in August.
+
+What's the situation with those contractors? Are they gone or just pausing?
+
+One's likely gone — they went all-in on GAF's commercial preferred program. \
+The other one I'm still working. They had a bad experience with a GAF install last month \
+and reached back out. I've got a lunch with them next week.
+
+Okay. Let's flag that as a recovery opportunity. What do you need from me to close it?
+
+A competitive spec sheet on TPO versus GAF's EverGuard would help. \
+And if we can offer them a project warranty upgrade on their next job that'd be a differentiator.
+
+I can get the spec sheet to you by end of week. The warranty upgrade — \
+I'll need to check with product on what we can do for a non-primary account.
+
+Fair enough. Moving on to the TPO launch. Marketing confirmed the Q4 launch date \
+is November 3rd. We'll have product samples by October 20th. Jake, can you identify \
+your top five target accounts for initial outreach?
+
+Yeah, I've already got a short list. I'll have it in Salesforce by Friday.
+
+Good. Last item — Salesforce rollout. IT says the new activity logging template goes \
+live October 1st. Everyone needs to complete the 45-minute training module by September 28th. \
+Any questions on that?
+
+Is the old activity format still going to work after October 1st?
+
+No, it'll be deprecated. You'll get a warning for two weeks then it locks.
+
+Got it. I'll do the training this week.
+
+Alright, that's everything. Jake, send me the target account list and I'll loop in \
+marketing for the launch sequence. Talk next week.
+"""
+
+_DEMO_ANALYSIS_MEETING = """\
+### MEETING MINUTES
+
+**Meeting:** Q3 Territory Review & Q4 Planning
+**Participants:** Jake Morales (Sales Rep), Manager
+**Date:** [Demo]
+
+**Executive Summary:** Quarterly performance review covering Q3 results (94% of target), \
+a DFW territory recovery opportunity with a defecting contractor, Q4 TPO product launch \
+preparation, and mandatory Salesforce system migration training.
+
+**Key Topics:**
+
+**1. Q3 Territory Performance**
+- Total Q3 revenue: $1.2M (94% of target)
+- Houston metro: strong, ~60% of revenue
+- DFW: underperforming at 71% of target — two contractor accounts lost to GAF's rebate program in August
+- One lost account actively being recovered (contractor had a bad GAF install experience; lunch meeting scheduled next week)
+
+**2. DFW Account Recovery**
+- One contractor (GAF preferred program) likely permanently lost
+- Second contractor is a live recovery opportunity — lunch scheduled
+- Rep needs competitive spec sheet (TPO vs. GAF EverGuard) and potential warranty upgrade offer
+
+**3. Q4 TPO Product Launch**
+- Launch date confirmed: November 3rd
+- Product samples available: October 20th
+- Rep to identify top 5 target accounts for initial outreach by Friday in Salesforce
+
+**4. Salesforce Activity Logging Migration**
+- New activity logging template goes live October 1st
+- Old format deprecated October 1st (2-week warning, then locked)
+- Required: 45-minute training module completed by September 28th
+
+---
+
+### ACTION ITEMS
+
+1. **Manager** — Send competitive spec sheet (TPO vs. GAF EverGuard) to Jake | **By:** End of this week | **Priority:** High
+2. **Manager** — Check with product team on warranty upgrade eligibility for non-primary accounts | **By:** End of this week | **Priority:** Medium
+3. **Jake** — Add top 5 Q4 TPO target accounts to Salesforce | **By:** Friday | **Priority:** High
+4. **Jake** — Complete Salesforce activity logging training module | **By:** September 28th | **Priority:** High
+5. **Jake** — Attend recovery lunch with DFW contractor next week | **By:** Next week | **Priority:** High
+
+---
+
+### DECISIONS MADE
+
+1. **DFW Recovery Strategy:** Pursue the second defecting contractor with a competitive spec comparison and explore warranty upgrade as a differentiator. The first contractor is deprioritized.
+   - *Rationale:* Recent GAF installation failure creates a credible opening; cost of recovery is low.
+   - *Impact:* Potential to recover ~15% of DFW shortfall in Q4.
+
+2. **TPO Launch Sequencing:** Jake to drive top-5 account identification; marketing to own the launch communication sequence once list is in Salesforce.
+   - *Rationale:* Rep has direct account relationships and best intel on readiness.
+   - *Impact:* Focused outreach increases likelihood of quick Q4 wins on new product.
+"""
+
+DEMO_RESULTS = {
+    "demo_warehouse_call.m4a": {
+        "transcript": _DEMO_TRANSCRIPT_SALES,
+        "diarized_transcript": _DEMO_DIARIZED_TRANSCRIPT_SALES,
+        "analysis": _DEMO_ANALYSIS_SALES,
+        "mode": "External Sales Call",
+        "talk_ratio": 0.58,
+        "diarization": {
+            "talk_ratio": 0.58,
+            "speakers": {
+                "Rep": {"word_count": 312},
+                "Customer": {"word_count": 228},
+            },
+        },
+        "_is_demo": True,
+    },
+    "demo_q3_review_meeting.m4a": {
+        "transcript": _DEMO_TRANSCRIPT_MEETING,
+        "analysis": _DEMO_ANALYSIS_MEETING,
+        "mode": "Internal Meeting",
+        "_is_demo": True,
+    },
+}
 
 # ---------------------------------------------------------------------------
 # System Prompts
@@ -487,6 +749,7 @@ def chunk_audio_if_needed(uploaded_file):
         tmp_path = tmp.name
 
     try:
+        from pydub import AudioSegment  # lazy import — not available on Python 3.14 without pyaudioop
         audio = AudioSegment.from_file(tmp_path)
         chunks = []
         for i in range(0, len(audio), CHUNK_DURATION_MS):
@@ -934,6 +1197,12 @@ def page_process(client):
             use_container_width=True,
         )
 
+        demo_btn = st.button(
+            "▶ Load Demo",
+            use_container_width=True,
+            help="Load two pre-built sample calls to explore all features without uploading audio.",
+        )
+
         st.divider()
 
         with st.expander("Salesforce Integration (Optional)"):
@@ -956,6 +1225,13 @@ def page_process(client):
     # --- Helper to resolve per-file mode -----------------------------------
     def get_file_mode(file_name):
         return st.session_state.get(f"mode_{file_name}", default_mode)
+
+    # --- Demo mode ---------------------------------------------------------
+    if demo_btn:
+        st.session_state.results = dict(DEMO_RESULTS)
+        st.session_state.pipeline_summary = None
+        st.session_state.follow_up_emails = {}
+        st.toast("Demo loaded! Explore all features below.", icon="▶")
 
     # --- Kick off processing -----------------------------------------------
     if process_btn and uploaded_files:
@@ -1060,6 +1336,16 @@ def page_process(client):
     # --- Display results ---------------------------------------------------
     if not st.session_state.results:
         return
+
+    is_demo = any(
+        r.get("_is_demo") for r in st.session_state.results.values()
+    )
+    if is_demo:
+        st.info(
+            "**Demo Mode** — These are pre-built sample scenarios for Henry Company. "
+            "Upload your own audio and click **Process Files** to analyze real calls.",
+            icon="▶",
+        )
 
     st.header("Results")
 
